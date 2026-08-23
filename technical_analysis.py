@@ -58,6 +58,7 @@ def main():
     
     res.to_sql("processed_stock_analytics", conn, if_exists="replace", index=False)
     conn.close()
+    conn.close()
     
     print("Technical analytics processed successfully.")
 
