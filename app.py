@@ -330,7 +330,4 @@ with st.expander("📂 View Raw Enriched Data Table"):
     )
 
 st.markdown("---")
-    mime="text/csv"
-    )
 
-st.markdown("---")
