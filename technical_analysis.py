@@ -10,23 +10,29 @@ def main():
         avg_gain = gain.rolling(window=window, min_periods=window).mean()
         avg_loss = loss.rolling(window=window, min_periods=window).mean()
     
+        # Exponential smoothing for RSI (Wilder's RSI)
+        avg_gain_vals = avg_gain.to_numpy(dtype=float)
+        avg_loss_vals = avg_loss.to_numpy(dtype=float)
+        gain_vals = gain.to_numpy(dtype=float)
+        loss_vals = loss.to_numpy(dtype=float)
+
         for idx in range(window, len(data)):
-            avg_gain.iloc[idx] = (
-                avg_gain.iloc[idx - 1] * (window - 1) + gain.iloc[idx]
-            ) / window
-            avg_loss.iloc[idx] = (
-                avg_loss.iloc[idx - 1] * (window - 1) + loss.iloc[idx]
-            ) / window
+            if not np.isnan(avg_gain_vals[idx - 1]):
+                avg_gain_vals[idx] = (avg_gain_vals[idx - 1] * (window - 1) + gain_vals[idx]) / window
+            if not np.isnan(avg_loss_vals[idx - 1]):
+                avg_loss_vals[idx] = (avg_loss_vals[idx - 1] * (window - 1) + loss_vals[idx]) / window
     
-        rs = avg_gain / avg_loss
+        rs = pd.Series(avg_gain_vals, index=data.index) / pd.Series(avg_loss_vals, index=data.index)
         return 100 - (100 / (1 + rs))
-    
-    
+
     conn = sqlite3.connect("stock_market.db")
-    df = pd.read_sql_query(
-        "SELECT * FROM raw_stock_prices ORDER BY Ticker, Date", conn
-    )
+    df = pd.read_sql_query("SELECT * FROM raw_stock_prices ORDER BY Ticker, Date", conn)
     
+    if df.empty:
+        print("Warning: raw_stock_prices table is empty.")
+        conn.close()
+        return
+
     df["Date"] = pd.to_datetime(df["Date"])
     processed_frames = []
     
@@ -38,30 +44,39 @@ def main():
         g["RSI_14"] = get_rsi(g["Close"], 14)
         g["Volatility_20"] = g["Close"].pct_change().rolling(20).std()
     
-        g["Signal"] = 0
+        # Trading Signals
         g["Signal"] = np.where(g["SMA_20"] > g["SMA_50"], 1, 0)
         g["Position"] = g["Signal"].shift(1).fillna(0)
     
+        # Signal status text expected by app.py
+        g["Signal_Status"] = np.where(
+            g["Signal"] == 1, 
+            "BUY (Golden Cross)", 
+            "SELL / HOLD (Death Cross)"
+        )
+    
+        # Performance Returns
         g["Market_Return"] = g["Close"].pct_change()
         g["Strategy_Return"] = g["Market_Return"] * g["Position"]
     
-        g["Cum_Market"] = (1 + g["Market_Return"].fillna(0)).cumprod()
-        g["Cum_Strategy"] = (1 + g["Strategy_Return"].fillna(0)).cumprod()
+        # Match column names expected by app.py
+        g["Cum_Market_Return"] = (1 + g["Market_Return"].fillna(0)).cumprod() - 1
+        g["Cum_Strategy_Return"] = (1 + g["Strategy_Return"].fillna(0)).cumprod() - 1
     
-        peak = g["Cum_Strategy"].cummax()
-        g["Drawdown"] = (g["Cum_Strategy"] - peak) / peak
+        peak = (1 + g["Cum_Strategy_Return"]).cummax()
+        g["Drawdown"] = ((1 + g["Cum_Strategy_Return"]) - peak) / peak
     
         processed_frames.append(g)
     
-    res = pd.concat(processed_frames)
+    res = pd.concat(processed_frames, ignore_index=True)
     res["Date"] = res["Date"].dt.strftime("%Y-%m-%d")
     
-    res.to_sql("processed_stock_analytics", conn, if_exists="replace", index=False)
-    conn.close()
+    # Save directly to the exact table name app.py queries
+    res.to_sql("technical_stock_analytics", conn, if_exists="replace", index=False)
+    conn.commit()
     conn.close()
     
-    print("Technical analytics processed successfully.")
-
+    print("Technical analytics processed successfully into 'technical_stock_analytics' table.")
 
 if __name__ == "__main__":
     main()
