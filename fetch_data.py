@@ -1,63 +1,52 @@
 import sqlite3
 import yfinance as yf
-
+import pandas as pd
 
 def main():
-# Replaced TATAMOTORS with TMPV (Tata Motors Passenger Vehicles)
-    raw_tickers = ["TMPV", "HDFCBANK", "SUNPHARMA", "TCS", "RELIANCE"]
-    ticker_map = {t: f"{t}.NS" for t in raw_tickers}
+    # Use standard NSE ticker symbols
+    tickers = ["TATAMOTORS", "HDFCBANK", "SUNPHARMA", "TCS", "RELIANCE"]
     
     conn = sqlite3.connect("stock_market.db")
-    cursor = conn.cursor()
     
-    cursor.execute(
-        """
-    CREATE TABLE IF NOT EXISTS raw_stock_prices (
-        Date TEXT,
-        Ticker TEXT,
-        Open REAL,
-        High REAL,
-        Low REAL,
-        Close REAL,
-        Volume REAL,
-        PRIMARY KEY (Date, Ticker)
-    )
-    """
-    )
-    conn.commit()
+    all_data = []
     
-    for display_name, ns_symbol in ticker_map.items():
-        print(f"Fetching data for {display_name}...")
+    for symbol in tickers:
+        ns_symbol = f"{symbol}.NS"
+        print(f"Fetching data for {symbol} ({ns_symbol})...")
+        
+        # Download 5 years of daily data
         df = yf.download(ns_symbol, period="5y", interval="1d", progress=False)
-    
+        
         if df.empty:
             print(f"Warning: No data returned for {ns_symbol}")
             continue
-    
-        if isinstance(df.columns, tuple) or getattr(
-            df.columns, "nlevels", 1
-        ) > 1:
-            df.columns = [col[0] for col in df.columns]
-    
+        
+        # Flatten MultiIndex columns if yfinance returns them
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+            
         df = df.reset_index()
-        df["Ticker"] = display_name
-    
+        df["Ticker"] = symbol
+        
+        # Keep standard OHLCV columns
         keep_cols = ["Date", "Ticker", "Open", "High", "Low", "Close", "Volume"]
-        df = df[keep_cols]
-        df["Date"] = df["Date"].dt.strftime("%Y-%m-%d")
-    
-        records = df.to_records(index=False)
-        cursor.executemany(
-            """
-        INSERT OR REPLACE INTO raw_stock_prices (Date, Ticker, Open, High, Low, Close, Volume)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-            list(records),
-        )
+        df = df[[c for c in keep_cols if c in df.columns]]
+        
+        # Convert Date to string YYYY-MM-DD
+        df["Date"] = pd.to_datetime(df["Date"]).dt.strftime("%Y-%m-%d")
+        
+        all_data.append(df)
+        
+    if all_data:
+        master_df = pd.concat(all_data, ignore_index=True)
+        # Write directly to SQLite table
+        master_df.to_sql("raw_stock_prices", conn, if_exists="replace", index=False)
         conn.commit()
-    
+        print(f"Data fetch complete. Inserted {len(master_df)} rows into raw_stock_prices.")
+    else:
+        print("Error: No data was fetched for any ticker.")
+        
     conn.close()
-    print("Data fetch complete.")
-    
+
 if __name__ == "__main__":
     main()
